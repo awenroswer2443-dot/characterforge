@@ -5,18 +5,12 @@ import Uploader from "@/components/Uploader";
 import StylePicker from "@/components/StylePicker";
 import PromptInput from "@/components/PromptInput";
 import GenerateButton from "@/components/GenerateButton";
+import ForgeProgress from "@/components/ForgeProgress";
 import ResultView from "@/components/ResultView";
 import { findStyle, STYLES } from "@/lib/styles";
 
 type Phase = "compose" | "generating" | "result";
-
-const LOADING_PHASES = [
-  "stoking the forge",
-  "studying the photo",
-  "shaping the form",
-  "tempering details",
-  "finishing",
-];
+type GenPhase = "refining" | "generating" | null;
 
 export default function Home() {
   const [image, setImage] = useState<string | null>(null);
@@ -24,38 +18,19 @@ export default function Home() {
   const [prompt, setPrompt] = useState<string>("");
   const [phase, setPhase] = useState<Phase>("compose");
   const [error, setError] = useState<string | null>(null);
+  const [genPhase, setGenPhase] = useState<GenPhase>(null);
   const [result, setResult] = useState<{
     image: string;
     refinedPrompt: string;
     styleId: string;
   } | null>(null);
-  const [loadingPhase, setLoadingPhase] = useState(LOADING_PHASES[0]);
-  const phaseTimer = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    return () => {
-      if (phaseTimer.current) window.clearInterval(phaseTimer.current);
-    };
+    return () => abortRef.current?.abort();
   }, []);
 
   const styleDef = useMemo(() => findStyle(style), [style]);
-
-  const startLoadingPhases = () => {
-    let i = 0;
-    setLoadingPhase(LOADING_PHASES[0]);
-    if (phaseTimer.current) window.clearInterval(phaseTimer.current);
-    phaseTimer.current = window.setInterval(() => {
-      i = Math.min(i + 1, LOADING_PHASES.length - 1);
-      setLoadingPhase(LOADING_PHASES[i]);
-    }, 2400);
-  };
-
-  const stopLoadingPhases = () => {
-    if (phaseTimer.current) {
-      window.clearInterval(phaseTimer.current);
-      phaseTimer.current = null;
-    }
-  };
 
   const generate = async () => {
     if (!image) {
@@ -64,40 +39,78 @@ export default function Home() {
     }
     setError(null);
     setPhase("generating");
-    startLoadingPhases();
+    setGenPhase("refining");
+
+    const controller = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = controller;
+
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image, prompt, style }),
+        signal: controller.signal,
       });
-      const json = (await res.json().catch(() => null)) as {
-        image?: string;
-        refinedPrompt?: string;
-        error?: string;
-      } | null;
-      if (!res.ok || !json?.image) {
-        throw new Error(json?.error || "Generation failed.");
+
+      if (!res.ok || !res.body) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody?.error || `Request failed (${res.status}).`);
       }
-      setResult({
-        image: json.image,
-        refinedPrompt: json.refinedPrompt || "",
-        styleId: style,
-      });
-      setPhase("result");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+
+      while (!finished) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf("\n");
+        while (nl >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (line.length) {
+            const evt = parseEvent(line);
+            if (evt?.type === "phase") {
+              setGenPhase(evt.phase as GenPhase);
+            } else if (evt?.type === "done") {
+              setResult({
+                image: evt.image as string,
+                refinedPrompt: (evt.refinedPrompt as string) || "",
+                styleId: style,
+              });
+              setPhase("result");
+              finished = true;
+              break;
+            } else if (evt?.type === "error") {
+              throw new Error((evt.error as string) || "Generation failed.");
+            }
+          }
+          nl = buffer.indexOf("\n");
+        }
+      }
+
+      if (!finished) {
+        throw new Error("Connection ended before the image arrived.");
+      }
     } catch (err) {
+      if ((err as Error).name === "AbortError") return;
       const e = err as Error;
       setError(e.message || "Something went wrong.");
       setPhase("compose");
     } finally {
-      stopLoadingPhases();
+      setGenPhase(null);
     }
   };
 
   const reset = () => {
+    abortRef.current?.abort();
     setResult(null);
     setError(null);
     setPhase("compose");
+    setGenPhase(null);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -116,22 +129,22 @@ export default function Home() {
               CharacterForge
             </span>
           </div>
-          <span className="text-[10px] uppercase tracking-[0.3em] text-bone-400">
+          <span className="rounded-full border border-white/10 bg-ink-800/60 px-2 py-1 text-[10px] uppercase tracking-[0.3em] text-bone-400">
             beta
           </span>
         </header>
 
-        {phase !== "result" && (
+        {phase === "compose" && (
           <>
-            <div className="mb-6 animate-fade-in">
-              <h1 className="font-display text-[34px] leading-[1.05] text-bone-50 sm:text-[44px]">
+            <div className="mb-7 animate-fade-in">
+              <h1 className="font-display text-[40px] leading-[0.98] text-bone-50 sm:text-[52px]">
                 <span className="italic">Your photo,</span>
                 <br />
                 reforged.
               </h1>
-              <p className="mt-3 text-[14px] text-bone-300">
-                Upload a photo. Pick a style. Get a one-of-a-kind character in
-                seconds.
+              <p className="mt-3 max-w-sm text-[14px] leading-relaxed text-bone-300">
+                Upload a photo. Pick a style. Get a one-of-a-kind character —
+                your face, transformed.
               </p>
             </div>
 
@@ -151,18 +164,18 @@ export default function Home() {
                   <PromptInput value={prompt} onChange={setPrompt} />
                   <GenerateButton
                     onClick={generate}
-                    loading={phase === "generating"}
+                    loading={false}
                     disabled={!image}
-                    loadingPhase={loadingPhase}
                   />
                   <p className="text-center text-[11px] text-bone-500">
-                    {styleDef ? `Style: ${styleDef.label}` : ""} · ~10–20s · no
-                    sign-up
+                    {styleDef ? `${styleDef.label} · ` : ""}
+                    takes ~60 seconds · no sign-up
                   </p>
                 </>
               ) : (
-                <div className="rounded-2xl border border-white/5 bg-ink-800/30 px-5 py-4 text-[13px] text-bone-400">
-                  Tip: a clear, well-lit photo of one person works best.
+                <div className="rounded-2xl border border-white/5 bg-ink-800/30 px-5 py-4 text-[13px] leading-relaxed text-bone-400">
+                  <span className="text-bone-200">Tip:</span> a clear, well-lit
+                  photo of one person works best. Phone selfies are perfect.
                 </div>
               )}
 
@@ -176,6 +189,19 @@ export default function Home() {
               ) : null}
             </div>
           </>
+        )}
+
+        {phase === "generating" && (
+          <ForgeProgress
+            phase={genPhase}
+            sourceImage={image}
+            styleLabel={styleDef?.label || "Forging"}
+            onCancel={() => {
+              abortRef.current?.abort();
+              setPhase("compose");
+              setGenPhase(null);
+            }}
+          />
         )}
 
         {phase === "result" && result ? (
@@ -194,6 +220,14 @@ export default function Home() {
       </main>
     </div>
   );
+}
+
+function parseEvent(line: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function Logo() {

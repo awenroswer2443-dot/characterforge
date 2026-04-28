@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { findStyle } from "@/lib/styles";
 import {
   IMAGE_MODEL,
@@ -8,7 +8,7 @@ import {
 } from "@/lib/openrouter";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 type Body = {
@@ -17,63 +17,97 @@ type Body = {
   style?: string;
 };
 
+// Streaming protocol (NDJSON, one event per line):
+//   {"type":"hb"}                            heartbeat (keeps connection alive)
+//   {"type":"phase","phase":"refining"}      progress signal
+//   {"type":"done","image":"...","refinedPrompt":"..."}
+//   {"type":"error","error":"..."}
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "Server is missing OPENROUTER_API_KEY." },
-      { status: 500 }
-    );
-  }
 
   let body: Body;
   try {
     body = (await req.json()) as Body;
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    return jsonError("Invalid request body.", 400);
   }
 
   const { image, prompt = "", style = "" } = body;
 
+  if (!apiKey) return jsonError("Server is missing OPENROUTER_API_KEY.", 500);
   if (!image || typeof image !== "string" || !image.startsWith("data:image/")) {
-    return NextResponse.json(
-      { error: "Please upload a valid image." },
-      { status: 400 }
-    );
+    return jsonError("Please upload a valid image.", 400);
   }
   if (image.length > 9_000_000) {
-    return NextResponse.json(
-      { error: "Image is too large. Try a smaller photo." },
-      { status: 413 }
-    );
+    return jsonError("Image is too large. Try a smaller photo.", 413);
   }
 
   const styleDef = findStyle(style);
-  if (!styleDef) {
-    return NextResponse.json({ error: "Unknown style." }, { status: 400 });
-  }
+  if (!styleDef) return jsonError("Unknown style.", 400);
 
   const userNote = prompt.toString().slice(0, 500).trim();
   const headers = openRouterHeaders(apiKey);
 
-  const refined = await refinePrompt({
-    headers,
-    styleSeed: styleDef.seed,
-    styleLabel: styleDef.label,
-    userNote,
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (obj: Record<string, unknown>) => {
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+        } catch {
+          /* client disconnected */
+        }
+      };
+
+      const heartbeat = setInterval(() => send({ type: "hb" }), 15000);
+
+      try {
+        send({ type: "phase", phase: "refining" });
+        const refined = await refinePrompt({
+          headers,
+          styleSeed: styleDef.seed,
+          styleLabel: styleDef.label,
+          userNote,
+        });
+
+        send({ type: "phase", phase: "generating" });
+        const dataUrl = await generateImage({
+          headers,
+          image,
+          refinedPrompt: refined,
+        });
+
+        send({ type: "done", image: dataUrl, refinedPrompt: refined });
+      } catch (err) {
+        const e = err as Error;
+        send({ type: "error", error: e.message || "Generation failed." });
+      } finally {
+        clearInterval(heartbeat);
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    },
   });
 
-  try {
-    const result = await generateImage({ headers, image, refinedPrompt: refined });
-    return NextResponse.json({ image: result, refinedPrompt: refined });
-  } catch (err) {
-    const e = err as Error & { status?: number };
-    const status = e.status ?? 502;
-    return NextResponse.json(
-      { error: e.message || "Image generation failed." },
-      { status }
-    );
-  }
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+function jsonError(message: string, status: number): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 async function refinePrompt({
@@ -112,7 +146,9 @@ async function refinePrompt({
     });
 
     if (!res.ok) return fallback;
-    const json = await res.json();
+    const json = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
     const content = json?.choices?.[0]?.message?.content;
     if (typeof content === "string" && content.trim().length > 10) {
       return content.trim();
@@ -152,21 +188,15 @@ async function generateImage({
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    const err = new Error(humanizeUpstreamError(res.status, text)) as Error & {
-      status?: number;
-    };
-    err.status = res.status >= 500 ? 502 : res.status;
-    throw err;
+    throw new Error(humanizeUpstreamError(res.status, text));
   }
 
   const json = await res.json();
   const dataUrl = extractImageDataUrl(json);
   if (!dataUrl) {
-    const err = new Error(
+    throw new Error(
       "The model didn't return an image. Try a different photo or style."
-    ) as Error & { status?: number };
-    err.status = 502;
-    throw err;
+    );
   }
   return dataUrl;
 }
