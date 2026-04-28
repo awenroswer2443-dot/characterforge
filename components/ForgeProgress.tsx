@@ -9,7 +9,7 @@ interface Props {
   onCancel: () => void;
 }
 
-const EXPECTED_SECONDS = 70;
+const EXPECTED_SECONDS = 180;
 
 export default function ForgeProgress({
   phase,
@@ -34,11 +34,11 @@ export default function ForgeProgress({
   const headline =
     phase === "refining"
       ? "shaping the prompt"
-      : elapsed < 12
+      : elapsed < 25
         ? "studying the photo"
-        : elapsed < 28
+        : elapsed < 70
           ? "sculpting the form"
-          : elapsed < 50
+          : elapsed < 130
             ? "tempering details"
             : overtime
               ? "almost there"
@@ -104,7 +104,7 @@ export default function ForgeProgress({
       </button>
 
       <p className="text-center text-[11px] text-bone-500">
-        Connection stays open while the model works. Don&apos;t close this tab.
+        2-3 minutes is normal — the model is rendering at high resolution. Don&apos;t close this tab.
       </p>
     </div>
   );

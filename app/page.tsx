@@ -169,7 +169,7 @@ export default function Home() {
                   />
                   <p className="text-center text-[11px] text-bone-500">
                     {styleDef ? `${styleDef.label} · ` : ""}
-                    takes ~60 seconds · no sign-up
+                    takes 2-3 minutes · no sign-up
                   </p>
                 </>
               ) : (
