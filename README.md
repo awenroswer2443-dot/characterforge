@@ -4,8 +4,8 @@ Upload a photo. Pick a style. Get a one-of-a-kind character.
 
 Built with Next.js + TypeScript + Tailwind. Uses OpenRouter to call:
 
-- **`deepseek/deepseek-chat`** — refines the user's note + chosen style into a vivid image-generation prompt (cheap, fast).
-- **`google/gemini-2.5-flash-image`** — image-to-image character generator that preserves the subject's face from the uploaded photo.
+- **`deepseek/deepseek-v4-flash`** — refines the user's note + chosen style into a vivid image-generation prompt (cheap, fast).
+- **`openai/gpt-5.4-image-2`** — image-to-image character generator that preserves the subject's face from the uploaded photo.
 
 ## Styles
 
@@ -92,10 +92,10 @@ lib/
 
 ## Notes
 
-- The model IDs `gpt-image-2` and `deepseek-v4-fast` mentioned in the spec don't currently exist. This build uses `google/gemini-2.5-flash-image` (purpose-built for *photo → stylized character* with identity preservation) and `deepseek/deepseek-chat` (cheap, fast prompt refinement).
-- Cost: ~$0.04 per generation (Gemini image output) + a fraction of a cent for refinement.
-- Photos are resized to 1024px on the longer edge before upload to keep round-trips fast.
-- Errors from the upstream model (rate limits, content policy, network) are surfaced as friendly inline messages.
+- Verified live against the OpenRouter `/models` endpoint: `openai/gpt-5.4-image-2` advertises `input_modalities: [image, text, file]` and `output_modalities: [image, text]` — exactly what an image-to-image character app needs. `deepseek/deepseek-v4-flash` is text-in/text-out, used for prompt refinement only.
+- Cost ballpark: image output dominates — roughly a few cents per generation. Refinement is fractions of a cent ($0.14/1M input tokens for DeepSeek V4 Flash).
+- Photos are resized client-side to 1024px on the longer edge before upload (faster round-trips, lower model input cost).
+- Errors from upstream (rate limits, content policy, network) surface as friendly inline messages.
 
 ## License
 

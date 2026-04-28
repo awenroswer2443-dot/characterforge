@@ -1,8 +1,8 @@
 // OpenRouter constants used by the API route.
 export const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-export const REFINE_MODEL = "deepseek/deepseek-chat";
-export const IMAGE_MODEL = "google/gemini-2.5-flash-image";
+export const REFINE_MODEL = "deepseek/deepseek-v4-flash";
+export const IMAGE_MODEL = "openai/gpt-5.4-image-2";
 
 export const APP_TITLE = "CharacterForge";
 export const APP_REFERER = "https://characterforge.app";
